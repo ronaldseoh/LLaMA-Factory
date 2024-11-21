@@ -129,28 +129,78 @@ def patch_config(
         use_jit_compile = os.environ.get("JIT_COMPILE", "0").lower() in ["true", "1"]
         torch.npu.set_compile_mode(jit_compile=use_jit_compile)
 
-    configure_attn_implementation(config, model_args, is_trainable)
-    configure_rope(config, model_args, is_trainable)
-    configure_longlora(config, model_args, is_trainable)
-    configure_quantization(config, tokenizer, model_args, init_kwargs)
-    configure_moe(config, model_args, is_trainable)
-    configure_visual_model(config)
-    configure_packing(config, model_args, is_trainable)
+    try:
+        configure_attn_implementation(config, model_args, is_trainable)
+    except Exception as e:
+        print(e)
+        pass
 
-    if model_args.use_cache and not is_trainable:
-        setattr(config, "use_cache", True)
-        logger.info_rank0("Using KV cache for faster generation.")
+    try:
+        configure_rope(config, model_args, is_trainable)
+    except Exception as e:
+        print(e)
+        pass
 
-    if getattr(config, "model_type", None) == "qwen":
-        setattr(config, "use_flash_attn", model_args.flash_attn == "fa2")
-        for dtype_name, dtype in [("fp16", torch.float16), ("bf16", torch.bfloat16), ("fp32", torch.float32)]:
-            setattr(config, dtype_name, model_args.compute_dtype == dtype)
+    try:
+        configure_longlora(config, model_args, is_trainable)
+    except Exception as e:
+        print(e)
+        pass
 
-    if getattr(config, "model_type", None) == "qwen2" and is_trainable and model_args.flash_attn == "fa2":
-        setattr(config, "use_cache", False)  # qwen2 does not support use_cache when using flash attn
+    try:
+        configure_quantization(config, tokenizer, model_args, init_kwargs)
+    except Exception as e:
+        print(e)
+        pass
 
-    if "LlavaLlamaForCausalLM" in getattr(config, "architectures", []):
-        raise ValueError("Please download llava models with hf-compatible format: https://huggingface.co/llava-hf")
+    try:
+        configure_moe(config, model_args, is_trainable)
+    except Exception as e:
+        print(e)
+        pass
+
+    try:
+        configure_visual_model(config)
+    except Exception as e:
+        print(e)
+        pass
+        
+    try:
+        configure_packing(config, model_args, is_trainable)
+    except Exception as e:
+        print(e)
+        pass
+
+    try:
+        if model_args.use_cache and not is_trainable:
+            setattr(config, "use_cache", True)
+            logger.info_rank0("Using KV cache for faster generation.")
+    except Exception as e:
+        print(e)
+        pass
+
+    try:
+        if getattr(config, "model_type", None) == "qwen":
+            setattr(config, "use_flash_attn", model_args.flash_attn == "fa2")
+            for dtype_name, dtype in [("fp16", torch.float16), ("bf16", torch.bfloat16), ("fp32", torch.float32)]:
+                setattr(config, dtype_name, model_args.compute_dtype == dtype)
+    except Exception as e:
+        print(e)
+        pass
+
+    try:
+        if getattr(config, "model_type", None) == "qwen2" and is_trainable and model_args.flash_attn == "fa2":
+            setattr(config, "use_cache", False)  # qwen2 does not support use_cache when using flash attn
+    except Exception as e:
+        print(e)
+        pass
+
+    try:
+        if "LlavaLlamaForCausalLM" in getattr(config, "architectures", []):
+            raise ValueError("Please download llava models with hf-compatible format: https://huggingface.co/llava-hf")
+    except Exception as e:
+        print(e)
+        pass
 
     # deepspeed zero3 is not compatible with low_cpu_mem_usage
     init_kwargs["low_cpu_mem_usage"] = model_args.low_cpu_mem_usage and (not is_deepspeed_zero3_enabled())
@@ -158,16 +208,19 @@ def patch_config(
     # cast data type of the model if:
     # 1. not deepspeed zero3 and not fsdp (keep zero3 or fsdp in float32)
     # 2. quantization_bit is not None (qlora)
-    if (not is_deepspeed_zero3_enabled() and not is_fsdp_enabled()) or model_args.quantization_bit is not None:
-        init_kwargs["torch_dtype"] = model_args.compute_dtype
+    try:
+        if (not is_deepspeed_zero3_enabled() and not is_fsdp_enabled()) or model_args.quantization_bit is not None:
+            init_kwargs["torch_dtype"] = model_args.compute_dtype
 
-        if init_kwargs["low_cpu_mem_usage"]:  # device map requires low_cpu_mem_usage=True
-            if "device_map" not in init_kwargs and model_args.device_map:
-                init_kwargs["device_map"] = model_args.device_map
+            if init_kwargs["low_cpu_mem_usage"]:  # device map requires low_cpu_mem_usage=True
+                if "device_map" not in init_kwargs and model_args.device_map:
+                    init_kwargs["device_map"] = model_args.device_map
 
-            if init_kwargs.get("device_map", None) == "auto":
-                init_kwargs["offload_folder"] = model_args.offload_folder
-
+                if init_kwargs.get("device_map", None) == "auto":
+                    init_kwargs["offload_folder"] = model_args.offload_folder
+    except Exception as e:
+        print(e)
+        pass
 
 def patch_model(
     model: "PreTrainedModel",
