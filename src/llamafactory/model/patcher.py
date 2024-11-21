@@ -67,49 +67,49 @@ def patch_processor(
     try:
         setattr(processor, "tokenizer", tokenizer)
     except Exception as e:
-        logging.error(traceback.format_exc())
+        print(e)
         pass
         
     try:
         setattr(processor, "image_seqlen", get_image_seqlen(config))
     except Exception as e:
-        logging.error(traceback.format_exc())
+        print(e)
         pass
 
     try:
         setattr(processor, "image_resolution", model_args.image_resolution)
     except Exception as e:
-        logging.error(traceback.format_exc())
+        print(e)
         pass
 
     try:
         setattr(processor, "patch_size", get_patch_size(config))
     except Exception as e:
-        logging.error(traceback.format_exc())
+        print(e)
         pass
         
     try:
         setattr(processor, "video_resolution", model_args.video_resolution)
     except Exception as e:
-        logging.error(traceback.format_exc())
+        print(e)
         pass
 
     try:
         setattr(processor, "video_fps", model_args.video_fps)
     except Exception as e:
-        logging.error(traceback.format_exc())
+        print(e)
         pass
         
     try:
         setattr(processor, "video_maxlen", model_args.video_maxlen)
     except Exception as e:
-        logging.error(traceback.format_exc())
+        print(e)
         pass
 
     try:
         setattr(processor, "vision_feature_select_strategy", get_vision_feature_select_strategy(config))
     except Exception as e:
-        logging.error(traceback.format_exc())
+        print(e)
         pass
 
 def patch_config(
