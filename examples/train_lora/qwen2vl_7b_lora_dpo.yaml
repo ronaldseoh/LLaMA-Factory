@@ -1,23 +1,25 @@
 ### model
-model_name_or_path: Qwen/Qwen2-VL-7B-Instruct
+model_name_or_path: /scratch/gilbreth/bseoh/dpo_experiments/qwen2-vl-7b-instruct-aokvqa-sft/
 cache_dir: /scratch/gilbreth/bseoh/hfcache
 
 ### method
-stage: sft
+stage: dpo
 do_train: true
 finetuning_type: lora
 lora_target: all
+pref_beta: 0.1
+pref_loss: sigmoid  # choices: [sigmoid (dpo), orpo, simpo]
 
 ### dataset
-dataset: mllm_demo,identity  # video: mllm_video_demo
+dataset: pref_data_dpo_7b
 template: qwen2_vl
 cutoff_len: 2048
-max_samples: 100000
+max_samples: 100000000
 overwrite_cache: true
 preprocessing_num_workers: 16
 
 ### output
-output_dir: /scratch/gilbreth/bseoh/dpo_experiments/qwen2-vl-7b-instruct-aokvqa-sft/
+output_dir: /scratch/gilbreth/bseoh/dpo_experiments/qwen2-vl-7b-instruct-aokvqa-dpo/
 logging_steps: 10
 save_steps: 500
 plot_loss: true
@@ -26,7 +28,7 @@ overwrite_output_dir: true
 ### train
 per_device_train_batch_size: 1
 gradient_accumulation_steps: 8
-learning_rate: 1.0e-4
+learning_rate: 5.0e-6
 num_train_epochs: 3.0
 lr_scheduler_type: cosine
 warmup_ratio: 0.1

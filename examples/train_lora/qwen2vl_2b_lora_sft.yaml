@@ -1,5 +1,5 @@
 ### model
-model_name_or_path: Qwen/Qwen2-VL-7B-Instruct
+model_name_or_path: Qwen/Qwen2-VL-2B-Instruct
 cache_dir: /scratch/gilbreth/bseoh/hfcache
 
 ### method
@@ -9,7 +9,7 @@ finetuning_type: lora
 lora_target: all
 
 ### dataset
-dataset: mllm_demo,identity  # video: mllm_video_demo
+dataset: mllm_2b_demo,identity  # video: mllm_video_demo
 template: qwen2_vl
 cutoff_len: 2048
 max_samples: 100000
@@ -17,7 +17,7 @@ overwrite_cache: true
 preprocessing_num_workers: 16
 
 ### output
-output_dir: /scratch/gilbreth/bseoh/dpo_experiments/qwen2-vl-7b-instruct-aokvqa-sft/
+output_dir: /scratch/gilbreth/bseoh/dpo_experiments/qwen2-vl-2b-instruct-aokvqa-sft/
 logging_steps: 10
 save_steps: 500
 plot_loss: true

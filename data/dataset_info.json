@@ -25,7 +25,7 @@
     }
   },
   "mllm_demo": {
-    "file_name": "mllm_demo.json",
+    "file_name": "/scratch/gilbreth/bseoh/converted_datasets/aokvqa/dpo_data/qwen2-vl-7b-instruct/sft_pref_data_depth=1_qwen2-vl-7b-instruct-aokvqa_v1p0_train_paraphrased-llama3-70b-instruct.json",
     "formatting": "sharegpt",
     "columns": {
       "messages": "messages",
@@ -36,6 +36,42 @@
       "content_tag": "content",
       "user_tag": "user",
       "assistant_tag": "assistant"
+    }
+  },
+  "mllm_2b_demo": {
+    "file_name": "/scratch/gilbreth/bseoh/converted_datasets/aokvqa/dpo_data/qwen2-vl-2b-instruct/sft_pref_data_depth=1_qwen2-vl-2b-instruct-aokvqa_v1p0_train_paraphrased-llama3-70b-instruct.json",
+    "formatting": "sharegpt",
+    "columns": {
+      "messages": "messages",
+      "images": "images"
+    },
+    "tags": {
+      "role_tag": "role",
+      "content_tag": "content",
+      "user_tag": "user",
+      "assistant_tag": "assistant"
+    }
+  },
+  "pref_data_dpo_7b": {
+    "file_name": "/scratch/gilbreth/bseoh/converted_datasets/aokvqa/dpo_data/qwen2-vl-7b-instruct/dpo_pref_data_depth=1_qwen2-vl-7b-instruct-aokvqa_v1p0_train_paraphrased-llama3-70b-instruct.json",
+    "ranking": true,
+    "formatting": "sharegpt",
+    "columns": {
+      "messages": "conversations",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "images": "images"
+    }
+  },
+  "pref_data_dpo_2b": {
+    "file_name": "/scratch/gilbreth/bseoh/converted_datasets/aokvqa/dpo_data/qwen2-vl-2b-instruct/dpo_pref_data_depth=1_qwen2-vl-2b-instruct-aokvqa_v1p0_train_paraphrased-llama3-70b-instruct.json",
+    "ranking": true,
+    "formatting": "sharegpt",
+    "columns": {
+      "messages": "conversations",
+      "chosen": "chosen",
+      "rejected": "rejected",
+      "images": "images"
     }
   },
   "mllm_video_demo": {
