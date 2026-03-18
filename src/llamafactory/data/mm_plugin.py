@@ -289,6 +289,7 @@ class MMPluginMixin:
                 # local_hwaccel = HWAccel(device_type="cuda", allow_software_fallback=False)
                 with av.open(video, "r") as container:
                     video_stream = next(stream for stream in container.streams if stream.type == "video")
+                    video_stream.codec_context.thread_count = 1
                     sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
                     container.seek(0)
                     for frame_idx, frame in enumerate(container.decode(video_stream)):
@@ -1510,6 +1511,7 @@ class Qwen2VLPlugin(BasePlugin):
                 # local_hwaccel = HWAccel(device_type="cuda", allow_software_fallback=False)
                 with av.open(video, "r") as container:
                     video_stream = next(stream for stream in container.streams if stream.type == "video")
+                    video_stream.codec_context.thread_count = 1
                     sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
                     container.seek(0)
                     for frame_idx, frame in enumerate(container.decode(video_stream)):
