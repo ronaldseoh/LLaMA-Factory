@@ -287,18 +287,18 @@ class MMPluginMixin:
                 durations.append(len(frames) / kwargs.get("video_fps", 2.0))
             else:
                 local_hwaccel = HWAccel(device_type="cuda", allow_software_fallback=False)
-                container = av.open(video, "r", hwaccel=local_hwaccel)
-                video_stream = next(stream for stream in container.streams if stream.type == "video")
-                sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
-                container.seek(0)
-                for frame_idx, frame in enumerate(container.decode(video_stream)):
-                    if frame_idx in sample_indices:
-                        frames.append(frame.to_image())
+                with av.open(video, "r", hwaccel=local_hwaccel) as container:
+                    video_stream = next(stream for stream in container.streams if stream.type == "video")
+                    sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
+                    container.seek(0)
+                    for frame_idx, frame in enumerate(container.decode(video_stream)):
+                        if frame_idx in sample_indices:
+                            frames.append(frame.to_image())
 
-                if video_stream.duration is None:
-                    durations.append(len(frames) / kwargs.get("video_fps", 2.0))
-                else:
-                    durations.append(float(video_stream.duration * video_stream.time_base))
+                    if video_stream.duration is None:
+                        durations.append(len(frames) / kwargs.get("video_fps", 2.0))
+                    else:
+                        durations.append(float(video_stream.duration * video_stream.time_base))
 
             frames = self._regularize_images(frames, **kwargs)["images"]
             results.append(frames)
@@ -1508,20 +1508,20 @@ class Qwen2VLPlugin(BasePlugin):
                 durations.append(len(frames) / kwargs.get("video_fps", 2.0))
             else:
                 local_hwaccel = HWAccel(device_type="cuda", allow_software_fallback=False)
-                container = av.open(video, "r", hwaccel=local_hwaccel)
-                video_stream = next(stream for stream in container.streams if stream.type == "video")
-                sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
-                container.seek(0)
-                for frame_idx, frame in enumerate(container.decode(video_stream)):
-                    if frame_idx in sample_indices:
-                        frames.append(frame.to_image())
+                with av.open(video, "r", hwaccel=local_hwaccel) as container:
+                    video_stream = next(stream for stream in container.streams if stream.type == "video")
+                    sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
+                    container.seek(0)
+                    for frame_idx, frame in enumerate(container.decode(video_stream)):
+                        if frame_idx in sample_indices:
+                            frames.append(frame.to_image())
 
-                if video_stream.duration is None:
-                    fps_per_video.append(kwargs.get("video_fps", 2.0))
-                    durations.append(len(frames) / kwargs.get("video_fps", 2.0))
-                else:
-                    fps_per_video.append(len(sample_indices) / float(video_stream.duration * video_stream.time_base))
-                    durations.append(float(video_stream.duration * video_stream.time_base))
+                    if video_stream.duration is None:
+                        fps_per_video.append(kwargs.get("video_fps", 2.0))
+                        durations.append(len(frames) / kwargs.get("video_fps", 2.0))
+                    else:
+                        fps_per_video.append(len(sample_indices) / float(video_stream.duration * video_stream.time_base))
+                        durations.append(float(video_stream.duration * video_stream.time_base))
 
             if len(frames) % 2 != 0:
                 frames.append(frames[-1])
