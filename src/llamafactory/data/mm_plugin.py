@@ -45,6 +45,12 @@ if is_pillow_available():
 
 if is_pyav_available():
     import av
+    from av.codec.hwaccel import HWAccel
+
+    hwaccel = HWAccel(
+        device_type="cuda",
+        allow_software_fallback=False,
+    )
 
 
 if is_transformers_version_greater_than("4.52.0"):
@@ -285,7 +291,7 @@ class MMPluginMixin:
                 frames = video
                 durations.append(len(frames) / kwargs.get("video_fps", 2.0))
             else:
-                container = av.open(video, "r")
+                container = av.open(video, "r", hwaccel=hwaccel)
                 video_stream = next(stream for stream in container.streams if stream.type == "video")
                 sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
                 container.seek(0)
@@ -1505,7 +1511,7 @@ class Qwen2VLPlugin(BasePlugin):
                 fps_per_video.append(kwargs.get("video_fps", 2.0))
                 durations.append(len(frames) / kwargs.get("video_fps", 2.0))
             else:
-                container = av.open(video, "r")
+                container = av.open(video, "r", hwaccel=hwaccel)
                 video_stream = next(stream for stream in container.streams if stream.type == "video")
                 sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
                 container.seek(0)
