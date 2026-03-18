@@ -286,8 +286,8 @@ class MMPluginMixin:
                 frames = video
                 durations.append(len(frames) / kwargs.get("video_fps", 2.0))
             else:
-                local_hwaccel = HWAccel(device_type="cuda", allow_software_fallback=False)
-                with av.open(video, "r", hwaccel=local_hwaccel) as container:
+                # local_hwaccel = HWAccel(device_type="cuda", allow_software_fallback=False)
+                with av.open(video, "r") as container:
                     video_stream = next(stream for stream in container.streams if stream.type == "video")
                     sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
                     container.seek(0)
@@ -1507,8 +1507,8 @@ class Qwen2VLPlugin(BasePlugin):
                 fps_per_video.append(kwargs.get("video_fps", 2.0))
                 durations.append(len(frames) / kwargs.get("video_fps", 2.0))
             else:
-                local_hwaccel = HWAccel(device_type="cuda", allow_software_fallback=False)
-                with av.open(video, "r", hwaccel=local_hwaccel) as container:
+                # local_hwaccel = HWAccel(device_type="cuda", allow_software_fallback=False)
+                with av.open(video, "r") as container:
                     video_stream = next(stream for stream in container.streams if stream.type == "video")
                     sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
                     container.seek(0)
