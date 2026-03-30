@@ -1516,12 +1516,8 @@ class Qwen2VLPlugin(BasePlugin):
                 with av.open(video, "r") as container:
                     video_stream = next(stream for stream in container.streams if stream.type == "video")
 
-                    # Safe GPU acceleration (main process only)
-                    try:
-                        hwaccel = HWAccel(device_type="cuda", allow_software_fallback=True)
-                        video_stream.codec_context.hwaccel = hwaccel
-                    except:
-                        pass  # Fall back to CPU
+                    hwaccel = HWAccel(device_type="cuda", allow_software_fallback=False)
+                    video_stream.codec_context.hwaccel = hwaccel
                     
                     # Increase threads since we're in single process
                     video_stream.codec_context.thread_count = 4  # Xeon cores
