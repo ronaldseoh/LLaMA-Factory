@@ -286,10 +286,19 @@ class MMPluginMixin:
                 frames = video
                 durations.append(len(frames) / kwargs.get("video_fps", 2.0))
             else:
-                # local_hwaccel = HWAccel(device_type="cuda", allow_software_fallback=False)
                 with av.open(video, "r") as container:
                     video_stream = next(stream for stream in container.streams if stream.type == "video")
-                    video_stream.codec_context.thread_count = 1
+
+                    # Safe GPU acceleration (main process only)
+                    try:
+                        hwaccel = HWAccel(device_type="cuda", allow_software_fallback=True)
+                        video_stream.codec_context.hwaccel = hwaccel
+                    except:
+                        pass  # Fall back to CPU
+                    
+                    # Increase threads since we're in single process
+                    video_stream.codec_context.thread_count = 4  # Xeon cores
+                
                     sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
                     container.seek(0)
                     for frame_idx, frame in enumerate(container.decode(video_stream)):
@@ -1508,10 +1517,19 @@ class Qwen2VLPlugin(BasePlugin):
                 fps_per_video.append(kwargs.get("video_fps", 2.0))
                 durations.append(len(frames) / kwargs.get("video_fps", 2.0))
             else:
-                # local_hwaccel = HWAccel(device_type="cuda", allow_software_fallback=False)
                 with av.open(video, "r") as container:
                     video_stream = next(stream for stream in container.streams if stream.type == "video")
-                    video_stream.codec_context.thread_count = 1
+
+                    # Safe GPU acceleration (main process only)
+                    try:
+                        hwaccel = HWAccel(device_type="cuda", allow_software_fallback=True)
+                        video_stream.codec_context.hwaccel = hwaccel
+                    except:
+                        pass  # Fall back to CPU
+                    
+                    # Increase threads since we're in single process
+                    video_stream.codec_context.thread_count = 4  # Xeon cores
+
                     sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
                     container.seek(0)
                     for frame_idx, frame in enumerate(container.decode(video_stream)):
