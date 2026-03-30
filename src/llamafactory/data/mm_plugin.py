@@ -305,7 +305,7 @@ class MMPluginMixin:
                     # Configure codec context for performance
                     # Only increase thread_count if NOT using GPU (GPU doesn't benefit)
                     if not hwaccel_used:
-                        video_stream.codec_context.thread_count = 4
+                        video_stream.codec_context.thread_count = 16
                     else:
                         video_stream.codec_context.thread_count = 1  # GPU handles threading
                     
@@ -1556,7 +1556,7 @@ class Qwen2VLPlugin(BasePlugin):
                     # Configure codec context for performance
                     if not hwaccel_used:
                         # CPU decoding benefits from multi-threading
-                        video_stream.codec_context.thread_count = 4  # Adjust for your Xeon cores
+                        video_stream.codec_context.thread_count = 16  # Adjust for your Xeon cores
                     else:
                         # GPU decoding doesn't need multi-threading
                         video_stream.codec_context.thread_count = 1
