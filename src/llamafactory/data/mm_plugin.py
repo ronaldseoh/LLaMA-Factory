@@ -289,20 +289,15 @@ class MMPluginMixin:
             else:
                 # Try to use hardware acceleration
                 container = None
-                try:
-                    # For CUDA hardware acceleration on V100
-                    # Set FFmpeg options BEFORE opening
-                    options = {
-                        "hwaccel": "cuda",
-                        "hwaccel_output_format": "cuda",
-                    }
-                    container = av.open(video, "r", **options)
-                    hwaccel_used = True
-                except Exception as e:
-                    # Fallback to software decoding
-                    print(f"Hardware acceleration failed: {e}, falling back to CPU")
-                    container = av.open(video, "r")
-                    hwaccel_used = False
+
+                # For CUDA hardware acceleration on V100
+                # Set FFmpeg options BEFORE opening
+                options = {
+                    "hwaccel": "cuda",
+                    "hwaccel_output_format": "cuda",
+                }
+                container = av.open(video, "r", **options)
+                hwaccel_used = True
                 
                 try:
                     video_stream = next(stream for stream in container.streams if stream.type == "video")
@@ -1545,22 +1540,14 @@ class Qwen2VLPlugin(BasePlugin):
                 # Try GPU acceleration first, fall back to CPU
                 container = None
                 hwaccel_used = False
-                
-                try:
-                    # Hardware acceleration setup BEFORE opening (for V100)
-                    container_options = {
-                        "hwaccel": "cuda",
-                        "hwaccel_output_format": "cuda",
-                    }
-                    container = av.open(video, "r", **container_options)
-                    hwaccel_used = True
-                except Exception as e:
-                    # Fallback to software decoding
-                    try:
-                        container = av.open(video, "r")
-                        hwaccel_used = False
-                    except Exception as open_error:
-                        raise ValueError(f"Failed to open video {video}: {open_error}")
+
+                # Hardware acceleration setup BEFORE opening (for V100)
+                container_options = {
+                    "hwaccel": "cuda",
+                    "hwaccel_output_format": "cuda",
+                }
+                container = av.open(video, "r", **container_options)
+                hwaccel_used = True
                 
                 try:
                     video_stream = next(stream for stream in container.streams if stream.type == "video")
