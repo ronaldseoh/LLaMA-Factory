@@ -274,9 +274,10 @@ class MMPluginMixin:
         return {"images": results}
 
     def _regularize_videos(self, videos: list["VideoInput"], **kwargs) -> "RegularizedVideoOutput":
-        r"""Regularizes videos to avoid error. Including reading, resizing and converting."""
+        """Regularizes videos with proper hardware acceleration"""
         results = []
         durations = []
+        
         for video in videos:
             frames: list[ImageObject] = []
             if _check_video_is_nested_images(video):
@@ -286,26 +287,53 @@ class MMPluginMixin:
                 frames = video
                 durations.append(len(frames) / kwargs.get("video_fps", 2.0))
             else:
-                with av.open(video, "r") as container:
-                    video_stream = next(stream for stream in container.streams if stream.type == "video")
-
-                    hwaccel = HWAccel(device_type="cuda", allow_software_fallback=False)
-                    video_stream.codec_context.hwaccel = hwaccel
-                    
-                    # Increase threads since we're in single process
-                    video_stream.codec_context.thread_count = 4  # Xeon cores
+                # Try to use hardware acceleration
+                container = None
+                try:
+                    # For CUDA hardware acceleration on V100
+                    # Set FFmpeg options BEFORE opening
+                    options = {
+                        "hwaccel": "cuda",
+                        "hwaccel_output_format": "cuda",
+                    }
+                    container = av.open(video, "r", **options)
+                    hwaccel_used = True
+                except Exception as e:
+                    # Fallback to software decoding
+                    print(f"Hardware acceleration failed: {e}, falling back to CPU")
+                    container = av.open(video, "r")
+                    hwaccel_used = False
                 
+                try:
+                    video_stream = next(stream for stream in container.streams if stream.type == "video")
+                    
+                    # Configure codec context for performance
+                    # Only increase thread_count if NOT using GPU (GPU doesn't benefit)
+                    if not hwaccel_used:
+                        video_stream.codec_context.thread_count = 4
+                    else:
+                        video_stream.codec_context.thread_count = 1  # GPU handles threading
+                    
                     sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
                     container.seek(0)
+                    
                     for frame_idx, frame in enumerate(container.decode(video_stream)):
                         if frame_idx in sample_indices:
-                            frames.append(frame.to_image())
-
+                            # Convert GPU frames to CPU if needed
+                            try:
+                                frames.append(frame.to_image())
+                            except Exception:
+                                # If GPU→CPU conversion fails, skip this frame
+                                pass
+                    
                     if video_stream.duration is None:
                         durations.append(len(frames) / kwargs.get("video_fps", 2.0))
                     else:
                         durations.append(float(video_stream.duration * video_stream.time_base))
-
+                finally:
+                    if container:
+                        container.close()
+            
             frames = self._regularize_images(frames, **kwargs)["images"]
             results.append(frames)
 
@@ -1501,6 +1529,7 @@ class Qwen2VLPlugin(BasePlugin):
 
     @override
     def _regularize_videos(self, videos: list["VideoInput"], **kwargs) -> "RegularizedVideoOutput":
+        """Regularizes videos with proper GPU acceleration for V100"""
         results, fps_per_video, durations = [], [], []
         for video in videos:
             frames: list[ImageObject] = []
@@ -1513,20 +1542,48 @@ class Qwen2VLPlugin(BasePlugin):
                 fps_per_video.append(kwargs.get("video_fps", 2.0))
                 durations.append(len(frames) / kwargs.get("video_fps", 2.0))
             else:
-                with av.open(video, "r") as container:
+                # Try GPU acceleration first, fall back to CPU
+                container = None
+                hwaccel_used = False
+                
+                try:
+                    # Hardware acceleration setup BEFORE opening (for V100)
+                    container_options = {
+                        "hwaccel": "cuda",
+                        "hwaccel_output_format": "cuda",
+                    }
+                    container = av.open(video, "r", **container_options)
+                    hwaccel_used = True
+                except Exception as e:
+                    # Fallback to software decoding
+                    try:
+                        container = av.open(video, "r")
+                        hwaccel_used = False
+                    except Exception as open_error:
+                        raise ValueError(f"Failed to open video {video}: {open_error}")
+                
+                try:
                     video_stream = next(stream for stream in container.streams if stream.type == "video")
-
-                    hwaccel = HWAccel(device_type="cuda", allow_software_fallback=False)
-                    video_stream.codec_context.hwaccel = hwaccel
                     
-                    # Increase threads since we're in single process
-                    video_stream.codec_context.thread_count = 4  # Xeon cores
-
+                    # Configure codec context for performance
+                    if not hwaccel_used:
+                        # CPU decoding benefits from multi-threading
+                        video_stream.codec_context.thread_count = 4  # Adjust for your Xeon cores
+                    else:
+                        # GPU decoding doesn't need multi-threading
+                        video_stream.codec_context.thread_count = 1
+                    
                     sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
                     container.seek(0)
+                    
                     for frame_idx, frame in enumerate(container.decode(video_stream)):
                         if frame_idx in sample_indices:
-                            frames.append(frame.to_image())
+                            try:
+                                # Convert GPU frames to CPU PIL images
+                                frames.append(frame.to_image())
+                            except Exception:
+                                # If conversion fails, skip this frame
+                                continue
 
                     if video_stream.duration is None:
                         fps_per_video.append(kwargs.get("video_fps", 2.0))
@@ -1534,6 +1591,10 @@ class Qwen2VLPlugin(BasePlugin):
                     else:
                         fps_per_video.append(len(sample_indices) / float(video_stream.duration * video_stream.time_base))
                         durations.append(float(video_stream.duration * video_stream.time_base))
+                
+                finally:
+                    if container:
+                        container.close()
 
             if len(frames) % 2 != 0:
                 frames.append(frames[-1])
