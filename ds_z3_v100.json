@@ -14,7 +14,6 @@
     "stage": 3,
     "overlap_comm": true,
     "contiguous_gradients": true,
-    
     "sub_group_size": 1e8,
     "reduce_bucket_size": 2e7,
     "stage3_prefetch_bucket_size": 2e7,
