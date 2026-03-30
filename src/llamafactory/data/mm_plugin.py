@@ -290,13 +290,13 @@ class MMPluginMixin:
                 # Try to use hardware acceleration
                 container = None
 
-                # For CUDA hardware acceleration on V100
-                # Set FFmpeg options BEFORE opening
+                # Hardware acceleration setup with proper FFmpeg options
+                # Pass options as dict to av.open()
                 options = {
                     "hwaccel": "cuda",
                     "hwaccel_output_format": "cuda",
                 }
-                container = av.open(video, "r", **options)
+                container = av.open(video, "r", options=options)
                 hwaccel_used = True
                 
                 try:
@@ -1541,12 +1541,13 @@ class Qwen2VLPlugin(BasePlugin):
                 container = None
                 hwaccel_used = False
 
-                # Hardware acceleration setup BEFORE opening (for V100)
-                container_options = {
+                # Hardware acceleration setup with proper FFmpeg options
+                # Pass options as dict to av.open()
+                options = {
                     "hwaccel": "cuda",
                     "hwaccel_output_format": "cuda",
                 }
-                container = av.open(video, "r", **container_options)
+                container = av.open(video, "r", options=options)
                 hwaccel_used = True
                 
                 try:
