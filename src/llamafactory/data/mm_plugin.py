@@ -20,18 +20,19 @@ import math
 import os
 import re
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from io import BytesIO
 from typing import TYPE_CHECKING, BinaryIO, Literal, NotRequired, Optional, TypedDict, Union
 
 import numpy as np
 import torch
 import torchaudio
-from transformers.image_utils import get_image_size, is_valid_image, to_numpy_array
+from transformers.image_utils import get_image_size, is_valid_image, make_flat_list_of_images, to_numpy_array
 from transformers.models.mllama.processing_mllama import (
     convert_sparse_cross_attention_mask_to_dense,
     get_cross_attention_token_mask,
 )
+from transformers.video_utils import make_batched_videos
 from typing_extensions import override
 
 from ..extras.constants import AUDIO_PLACEHOLDER, IGNORE_INDEX, IMAGE_PLACEHOLDER, VIDEO_PLACEHOLDER
@@ -45,14 +46,6 @@ if is_pillow_available():
 
 if is_pyav_available():
     import av
-    from av.codec.hwaccel import HWAccel
-
-
-if is_transformers_version_greater_than("4.52.0"):
-    from transformers.image_utils import make_flat_list_of_images
-    from transformers.video_utils import make_batched_videos
-else:
-    from transformers.image_utils import make_batched_videos, make_flat_list_of_images
 
 
 if TYPE_CHECKING:
@@ -143,7 +136,6 @@ def _check_video_is_nested_images(video: "VideoInput") -> bool:
     return isinstance(video, list) and all(isinstance(frame, (str, BinaryIO, dict, ImageObject)) for frame in video)
 
 
-
 @dataclass
 class MMPluginMixin:
     image_token: str | None
@@ -151,275 +143,6 @@ class MMPluginMixin:
     audio_token: str | None
     expand_mm_tokens: bool = True
 
-    # Internal caches only; this does not affect public I/O.
-    _mm_cache: dict = field(default_factory=dict, init=False, repr=False)
-    _media_cache: dict = field(default_factory=dict, init=False, repr=False)
-
-    def _normalize_cache_item(self, item):
-        """Create a stable cache key fragment for media / kwargs / args."""
-        if isinstance(item, str):
-            if os.path.exists(item):
-                try:
-                    st = os.stat(item)
-                    return ("path", os.path.abspath(item), st.st_mtime_ns, st.st_size)
-                except OSError:
-                    return ("path", os.path.abspath(item))
-            return ("str", item)
-
-        if isinstance(item, bytes):
-            return ("bytes", len(item), hash(item[:4096]))
-
-        if isinstance(item, dict):
-            path = item.get("path", None)
-            raw = item.get("bytes", None)
-            if path is not None:
-                if os.path.exists(path):
-                    try:
-                        st = os.stat(path)
-                        return ("dict-path", os.path.abspath(path), st.st_mtime_ns, st.st_size)
-                    except OSError:
-                        return ("dict-path", os.path.abspath(path))
-                return ("dict-path", path)
-            if raw is not None:
-                return ("dict-bytes", len(raw), hash(raw[:4096]))
-            return ("dict", tuple(sorted(item.keys())))
-
-        if isinstance(item, (list, tuple)):
-            return (type(item).__name__, tuple(self._normalize_cache_item(x) for x in item))
-
-        if isinstance(item, np.ndarray):
-            head = item.tobytes()[:4096] if item.size > 0 else b""
-            return ("ndarray", item.shape, str(item.dtype), hash(head))
-
-        return ("obj", id(item))
-
-    def _make_mm_cache_key(self, images, videos, audios, processor, args=(), kwargs=None):
-        proc_name = processor.__class__.__name__ if processor is not None else None
-        args_key = tuple(self._normalize_cache_item(v) for v in args)
-        kwargs = kwargs or {}
-        kwargs_key = tuple(sorted((k, self._normalize_cache_item(v)) for k, v in kwargs.items()))
-        return (
-            self.__class__.__name__,
-            tuple(self._normalize_cache_item(x) for x in images),
-            tuple(self._normalize_cache_item(x) for x in videos),
-            tuple(self._normalize_cache_item(x) for x in audios),
-            proc_name,
-            args_key,
-            kwargs_key,
-        )
-
-    def _get_mm_inputs_cached(
-        self,
-        images,
-        videos,
-        audios,
-        processor,
-        *args,
-        **kwargs,
-    ):
-        """
-        Cached wrapper around _get_mm_inputs(...).
-        Returns deep copies so downstream pop()/mutation does not corrupt cache.
-        """
-        key = self._make_mm_cache_key(images, videos, audios, processor, args=args, kwargs=kwargs)
-        cached = self._mm_cache.get(key, None)
-        if cached is not None:
-            return deepcopy(cached)
-
-        value = self._get_mm_inputs(images, videos, audios, processor, *args, **kwargs)
-        self._mm_cache[key] = deepcopy(value)
-        return value
-
-    def _copy_frame_data(self, frame_obj):
-        if hasattr(frame_obj, "copy"):
-            return frame_obj.copy()
-        return deepcopy(frame_obj)
-
-    def _to_output_frame(self, frame, output="pil"):
-        if output == "pil":
-            return frame.to_image()
-        return frame.to_ndarray(format="rgb24")
-
-    def _get_stream_duration_seconds(self, container, video_stream):
-        if video_stream.duration is not None and video_stream.time_base is not None:
-            return float(video_stream.duration * video_stream.time_base)
-        if getattr(container, "duration", None) is not None:
-            return float(container.duration / av.time_base)
-        return None
-
-    def _decode_video_sparse(
-        self,
-        container,
-        video_stream,
-        sample_indices,
-        output="pil",
-    ):
-        """
-        Seek-based sparse decode.
-        Returns None to trigger fallback when stream metadata is insufficient.
-        """
-        if video_stream.time_base is None:
-            return None
-
-        try:
-            avg_rate = float(video_stream.average_rate) if video_stream.average_rate is not None else None
-        except Exception:
-            avg_rate = None
-
-        if avg_rate is None or avg_rate <= 0:
-            return None
-
-        sample_indices = [int(x) for x in sample_indices]
-        if len(sample_indices) == 0:
-            return []
-
-        unique_sorted = sorted(set(sample_indices))
-        decoded_map = {}
-        time_base = float(video_stream.time_base)
-
-        for idx in unique_sorted:
-            target_sec = idx / avg_rate
-            seek_sec = max(target_sec - (2.0 / avg_rate), 0.0)
-            seek_pts = int(seek_sec / time_base)
-
-            try:
-                container.seek(seek_pts, stream=video_stream, any_frame=False, backward=True)
-            except Exception:
-                return None
-
-            chosen = None
-            for frame in container.decode(video_stream):
-                if frame.pts is None:
-                    continue
-
-                frame_sec = float(frame.pts * video_stream.time_base)
-                if frame_sec + (0.5 / avg_rate) >= target_sec:
-                    chosen = self._to_output_frame(frame, output=output)
-                    break
-
-                if frame_sec > target_sec + 1.0:
-                    break
-
-            if chosen is None:
-                return None
-
-            decoded_map[idx] = chosen
-
-        return [self._copy_frame_data(decoded_map[idx]) for idx in sample_indices]
-
-    def _decode_video_sequential(
-        self,
-        container,
-        video_stream,
-        sample_indices,
-        output="pil",
-    ):
-        """
-        Sequential decode fallback with:
-        - O(1) membership via set
-        - early stop at last needed frame
-        """
-        sample_indices = [int(x) for x in sample_indices]
-        if len(sample_indices) == 0:
-            return []
-
-        unique_sorted = sorted(set(sample_indices))
-        sample_set = set(unique_sorted)
-        last_sample = unique_sorted[-1]
-        decoded_map = {}
-
-        try:
-            container.seek(0)
-        except Exception:
-            pass
-
-        for frame_idx, frame in enumerate(container.decode(video_stream)):
-            if frame_idx in sample_set and frame_idx not in decoded_map:
-                decoded_map[frame_idx] = self._to_output_frame(frame, output=output)
-                if len(decoded_map) == len(sample_set):
-                    break
-
-            if frame_idx >= last_sample:
-                break
-
-        return [self._copy_frame_data(decoded_map[idx]) for idx in sample_indices if idx in decoded_map]
-
-    def _decode_video_frames(
-        self,
-        video,
-        sample_indices,
-        output="pil",
-        **kwargs,
-    ):
-        """
-        Decode sampled frames using sparse-seek first, then sequential fallback.
-        Keeps current CUDA-required semantics.
-        """
-        requested_fps = kwargs.get("video_fps", 2.0)
-        cache_key = (
-            "video_frames",
-            self._normalize_cache_item(video),
-            tuple(int(x) for x in sample_indices),
-            output,
-            kwargs.get("image_max_pixels"),
-            kwargs.get("image_min_pixels"),
-            requested_fps,
-            kwargs.get("video_maxlen"),
-            self.__class__.__name__,
-        )
-
-        cached = self._media_cache.get(cache_key, None)
-        if cached is not None:
-            frames, duration = cached
-            return [self._copy_frame_data(x) for x in frames], duration
-
-        container = None
-        try:
-            options = {
-                "hwaccel": "cuda",
-                "hwaccel_output_format": "cuda",
-            }
-            container = av.open(video, "r", options=options)
-        except Exception as e:
-            raise RuntimeError(
-                f"CUDA hardware acceleration required but failed for video {video}. "
-                f"Error: {e}\n"
-                f"Ensure:\n"
-                f"1. NVIDIA GPU is available (check: nvidia-smi)\n"
-                f"2. FFmpeg compiled with CUDA support\n"
-                f"3. CUDA runtime libraries are accessible"
-            )
-
-        try:
-            video_stream = next(stream for stream in container.streams if stream.type == "video")
-            video_stream.codec_context.thread_count = 1
-
-            duration = self._get_stream_duration_seconds(container, video_stream)
-
-            frames = self._decode_video_sparse(
-                container=container,
-                video_stream=video_stream,
-                sample_indices=sample_indices,
-                output=output,
-            )
-
-            if frames is None or len(frames) != len(sample_indices):
-                frames = self._decode_video_sequential(
-                    container=container,
-                    video_stream=video_stream,
-                    sample_indices=sample_indices,
-                    output=output,
-                )
-
-            if duration is None:
-                duration = len(frames) / requested_fps if requested_fps > 0 else 0.0
-
-        finally:
-            if container is not None:
-                container.close()
-
-        self._media_cache[cache_key] = (deepcopy(frames), duration)
-        return frames, duration
     def _validate_input(
         self,
         processor: Optional["MMProcessor"],
@@ -544,61 +267,36 @@ class MMPluginMixin:
         return {"images": results}
 
     def _regularize_videos(self, videos: list["VideoInput"], **kwargs) -> "RegularizedVideoOutput":
-        r"""Regularizes videos with REQUIRED GPU acceleration."""
+        r"""Regularizes videos to avoid error. Including reading, resizing and converting."""
         results = []
         durations = []
-
-        requested_fps = kwargs.get("video_fps", 2.0)
-
         for video in videos:
             frames: list[ImageObject] = []
-
             if _check_video_is_nested_images(video):
                 for frame in video:
                     if not is_valid_image(frame) and not isinstance(frame, dict) and not os.path.exists(frame):
                         raise ValueError("Invalid image found in video frames.")
-
                 frames = video
-                durations.append(len(frames) / requested_fps if requested_fps > 0 else 0.0)
-
+                durations.append(len(frames) / kwargs.get("video_fps", 2.0))
             else:
-                probe_container = None
-                try:
-                    options = {
-                        "hwaccel": "cuda",
-                        "hwaccel_output_format": "cuda",
-                    }
-                    probe_container = av.open(video, "r", options=options)
-                except Exception as e:
-                    raise RuntimeError(
-                        f"CUDA hardware acceleration required but failed for video {video}. "
-                        f"Error: {e}\n"
-                        f"Ensure:\n"
-                        f"1. NVIDIA GPU is available (check: nvidia-smi)\n"
-                        f"2. FFmpeg compiled with CUDA support\n"
-                        f"3. CUDA runtime libraries are accessible"
-                    )
+                container = av.open(video, "r")
+                video_stream = next(stream for stream in container.streams if stream.type == "video")
+                sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
+                container.seek(0)
+                for frame_idx, frame in enumerate(container.decode(video_stream)):
+                    if frame_idx in sample_indices:
+                        frames.append(frame.to_image())
 
-                try:
-                    video_stream = next(stream for stream in probe_container.streams if stream.type == "video")
-                    video_stream.codec_context.thread_count = 1
-                    sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
-                finally:
-                    if probe_container is not None:
-                        probe_container.close()
-
-                frames, duration = self._decode_video_frames(
-                    video=video,
-                    sample_indices=sample_indices,
-                    output="pil",
-                    **kwargs,
-                )
-                durations.append(duration)
+                if video_stream.duration is None:
+                    durations.append(len(frames) / kwargs.get("video_fps", 2.0))
+                else:
+                    durations.append(float(video_stream.duration * video_stream.time_base))
 
             frames = self._regularize_images(frames, **kwargs)["images"]
             results.append(frames)
 
         return {"videos": results, "durations": durations}
+
     def _regularize_audios(
         self, audios: list["AudioInput"], sampling_rate: float, **kwargs
     ) -> "RegularizedAudioOutput":
@@ -762,7 +460,7 @@ class BasePlugin(MMPluginMixin):
 
         """
         self._validate_input(processor, images, videos, audios)
-        return self._get_mm_inputs_cached(images, videos, audios, processor)
+        return self._get_mm_inputs(images, videos, audios, processor)
 
 
 @dataclass
@@ -784,7 +482,7 @@ class ErnieVLPlugin(BasePlugin):
 
         merge_length: int = getattr(image_processor, "merge_size") ** 2
         if self.expand_mm_tokens:
-            mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+            mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
             image_grid_thw = mm_inputs.get("image_grid_thw", [])
             video_grid_thw = mm_inputs.get("video_grid_thw", [])
         else:
@@ -837,7 +535,7 @@ class Gemma3Plugin(BasePlugin):
 
         do_pan_and_scan: bool = getattr(processor, "image_do_pan_and_scan", False)
         if do_pan_and_scan:
-            mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+            mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
 
         for message in messages:
             content = message["content"]
@@ -870,7 +568,7 @@ class Gemma3Plugin(BasePlugin):
         processor: Optional["MMProcessor"],
     ) -> dict[str, Union[list[int], "torch.Tensor"]]:
         self._validate_input(processor, images, videos, audios)
-        mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+        mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
         mm_inputs.pop("num_crops", None)
         mm_inputs["token_type_ids"] = _get_gemma3_token_type_ids(batch_ids, processor)
         return mm_inputs
@@ -1009,7 +707,7 @@ class InternVLPlugin(BasePlugin):
         num_image_tokens, num_video_tokens = 0, 0
         image_seqlen = getattr(processor, "image_seq_length") if self.expand_mm_tokens else 1
         messages = deepcopy(messages)
-        mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+        mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
 
         image_pixel_patch_list = mm_inputs.get("image_num_patches")  # pathes of images
         video_num_patches = mm_inputs.get("video_num_patches")  # all patches for frames of videos
@@ -1053,7 +751,7 @@ class InternVLPlugin(BasePlugin):
         processor: Optional["ProcessorMixin"],
     ) -> dict[str, Union[list[int], "torch.Tensor"]]:
         self._validate_input(processor, images, videos, audios)
-        mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+        mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
         mm_inputs.pop("image_num_patches", None)
         mm_inputs.pop("video_patch_indices", None)
         mm_inputs.pop("video_num_patches", None)
@@ -1066,7 +764,7 @@ class KimiVLPlugin(BasePlugin):
         self._validate_input(processor, images, videos, audios)
         self._validate_messages(messages, images, videos, audios)
         if self.expand_mm_tokens:
-            mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+            mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
             image_grid_hws = mm_inputs.get("image_grid_hws", [])
         else:
             image_grid_hws = [None] * len(images)
@@ -1105,7 +803,7 @@ class Llama4Plugin(BasePlugin):
         self._validate_input(processor, images, videos, audios)
         self._validate_messages(messages, images, videos, audios)
         if self.expand_mm_tokens:
-            mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+            mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
             if "pixel_values" in mm_inputs:
                 image_height, image_width = mm_inputs["pixel_values"][0].shape[-2:]
                 num_patches_per_chunk = int(
@@ -1153,7 +851,7 @@ class Llama4Plugin(BasePlugin):
         processor: Optional["MMProcessor"],
     ) -> dict[str, Union[list[int], "torch.Tensor"]]:
         self._validate_input(processor, images, videos, audios)
-        mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+        mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
         mm_inputs.pop("aspect_ratios", None)
         return mm_inputs
 
@@ -1173,7 +871,7 @@ class LlavaPlugin(BasePlugin):
         self._validate_messages(messages, images, videos, audios)
         messages = deepcopy(messages)
         if self.expand_mm_tokens:
-            mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+            mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
             if "pixel_values" in mm_inputs:
                 height, width = get_image_size(to_numpy_array(mm_inputs["pixel_values"][0]))
                 image_seqlen = (height // processor.patch_size) * (
@@ -1210,7 +908,7 @@ class LlavaNextPlugin(BasePlugin):
         num_image_tokens = 0
         messages = deepcopy(messages)
         if self.expand_mm_tokens:
-            mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+            mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
             if "pixel_values" in mm_inputs:
                 image_sizes = iter(mm_inputs["image_sizes"].tolist())
                 height, width = get_image_size(to_numpy_array(mm_inputs["pixel_values"][0][0]))
@@ -1249,7 +947,7 @@ class LlavaNextVideoPlugin(BasePlugin):
         self._validate_messages(messages, images, videos, audios)
         messages = deepcopy(messages)
         if self.expand_mm_tokens:
-            mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+            mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
             if "pixel_values" in mm_inputs:
                 image_sizes = iter(mm_inputs["image_sizes"].tolist())
                 height, width = get_image_size(to_numpy_array(mm_inputs["pixel_values"][0][0]))
@@ -1354,7 +1052,9 @@ class MiniCPMVPlugin(BasePlugin):
                 chunk_input=True,
                 sampling_rate=getattr(processor, "audio_sampling_rate", 16000),
             )
-            audio_feature_lens = [torch.tensor(audio_feature_len) for audio_feature_len in audio_feature_lens]
+            audio_feature_lens = [
+                x.clone().detach() if isinstance(x, torch.Tensor) else torch.tensor(x) for x in audio_feature_lens
+            ]
             mm_inputs.update({"audio_features": audio_features, "audio_feature_lens": audio_feature_lens})
             if kwargs.get("ret_phs", False):
                 mm_inputs.update({"audio_phs": audio_phs})
@@ -1382,7 +1082,7 @@ class MiniCPMVPlugin(BasePlugin):
         if len(videos) != 0:
             max_slice_nums = 2
             use_image_id = False
-            mm_inputs = self._get_mm_inputs_cached([], videos, [], processor)
+            mm_inputs = self._get_mm_inputs([], videos, [], processor)
         else:
             max_slice_nums = image_processor.max_slice_nums
             use_image_id = image_processor.use_image_id
@@ -1394,7 +1094,7 @@ class MiniCPMVPlugin(BasePlugin):
                 num_image_tokens += 1
 
             while VIDEO_PLACEHOLDER in content:
-                video_seqlen = len(mm_inputs["pixel_values"][num_video_tokens]) if self.expand_mm_tokens else 1
+                video_seqlen = len(mm_inputs["image_sizes"][num_video_tokens]) if self.expand_mm_tokens else 1
                 content = content.replace(VIDEO_PLACEHOLDER, "{{image}}" * video_seqlen, 1)
                 num_video_tokens += 1
 
@@ -1407,10 +1107,10 @@ class MiniCPMVPlugin(BasePlugin):
             )
 
         if len(images):
-            mm_inputs = self._get_mm_inputs_cached(images, [], [], processor)
+            mm_inputs = self._get_mm_inputs(images, [], [], processor)
 
         if len(audios):
-            audio_inputs = self._get_mm_inputs_cached([], [], audios, processor, ret_phs=True)
+            audio_inputs = self._get_mm_inputs([], [], audios, processor, ret_phs=True)
 
         if self.expand_mm_tokens and mm_inputs:
             pattern = "(<image>./</image>)"
@@ -1486,7 +1186,7 @@ class MiniCPMVPlugin(BasePlugin):
             )
             image_bounds_list.append(image_bounds)
 
-        mm_inputs = self._get_mm_inputs_cached(images, videos, [], processor, valid_image_nums_ls=valid_image_nums_ls)
+        mm_inputs = self._get_mm_inputs(images, videos, [], processor, valid_image_nums_ls=valid_image_nums_ls)
         if "tgt_sizes" not in mm_inputs:
             dummy_data = [torch.empty(0) for _ in range(len(batch_ids))]
             mm_inputs.update({"tgt_sizes": dummy_data, "pixel_values": dummy_data, "image_sizes": dummy_data})
@@ -1514,7 +1214,7 @@ class MiniCPMVPlugin(BasePlugin):
                 spk_bounds = torch.hstack([(spk_start_idx + 1).unsqueeze(-1), spk_end_idx.unsqueeze(-1)])
                 spk_bounds_ls.append(spk_bounds)
 
-            audio_inputs = self._get_mm_inputs_cached([], [], audios, processor, valid_audio_nums_ls=valid_audio_nums_ls)
+            audio_inputs = self._get_mm_inputs([], [], audios, processor, valid_audio_nums_ls=valid_audio_nums_ls)
             mm_inputs.update(audio_inputs)
             mm_inputs.update({"audio_bounds": audio_bounds_ls, "spk_bounds": spk_bounds_ls})
 
@@ -1556,7 +1256,7 @@ class MllamaPlugin(BasePlugin):
         processor: Optional["MMProcessor"],
     ) -> dict[str, Union[list[int], "torch.Tensor"]]:
         self._validate_input(processor, images, videos, audios)
-        mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor, imglens)
+        mm_inputs = self._get_mm_inputs(images, videos, audios, processor, imglens)
         if mm_inputs:
             num_tiles = mm_inputs.pop("num_tiles")
             image_token_id: int = getattr(processor, "image_token_id")
@@ -1636,7 +1336,7 @@ class PaliGemmaPlugin(BasePlugin):
     ) -> dict[str, Union[list[int], "torch.Tensor"]]:
         self._validate_input(processor, images, videos, audios)
         seqlens = [len(input_ids) for input_ids in batch_ids]
-        mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+        mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
         mm_inputs["token_type_ids"] = _get_paligemma_token_type_ids(imglens, seqlens, processor)
         return mm_inputs
 
@@ -1656,7 +1356,7 @@ class PixtralPlugin(BasePlugin):
         self._validate_messages(messages, images, videos, audios)
         messages = deepcopy(messages)
         if self.expand_mm_tokens:
-            mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+            mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
             if "pixel_values" in mm_inputs:
                 # BC for transformers < 4.49.0
                 if isinstance(mm_inputs["image_sizes"], list):
@@ -1701,7 +1401,7 @@ class PixtralPlugin(BasePlugin):
         processor: Optional["MMProcessor"],
     ) -> dict[str, Union[list[int], "torch.Tensor"]]:
         self._validate_input(processor, images, videos, audios)
-        mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+        mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
         # ref to this commit https://github.com/huggingface/transformers/pull/35122
         # after transformers 4.49.0, the `image_sizes` is mandatory as an input parameter for Pixtral VisionEncoder forwarding.
         # it can be passed into `LlavaConditionalGeneration` as a parameter.
@@ -1727,7 +1427,7 @@ class Qwen2AudioPlugin(BasePlugin):
         eos_token: str = getattr(processor, "audio_eos_token")
         messages = deepcopy(messages)
         if self.expand_mm_tokens:
-            mm_inputs = self._get_mm_inputs_cached([], [], audios, processor)
+            mm_inputs = self._get_mm_inputs([], [], audios, processor)
             if "feature_attention_mask" in mm_inputs:
                 audio_lengths = mm_inputs["feature_attention_mask"].sum(-1).tolist()
 
@@ -1762,7 +1462,7 @@ class Qwen2AudioPlugin(BasePlugin):
         processor: Optional["MMProcessor"],
     ) -> dict[str, Union[list[int], "torch.Tensor"]]:
         self._validate_input(processor, images, videos, audios)
-        return self._get_mm_inputs_cached(images, videos, audios, processor)
+        return self._get_mm_inputs(images, videos, audios, processor)
 
 
 @dataclass
@@ -1789,72 +1489,46 @@ class Qwen2VLPlugin(BasePlugin):
 
     @override
     def _regularize_videos(self, videos: list["VideoInput"], **kwargs) -> "RegularizedVideoOutput":
-        """Regularizes videos with REQUIRED GPU acceleration for V100."""
-        results, fps_per_video, durations = [], [], []
-        requested_fps = kwargs.get("video_fps", 2.0)
-
+        results, fps_per_video, durations, frames_indices = [], [], [], []
         for video in videos:
             frames: list[ImageObject] = []
-
             if _check_video_is_nested_images(video):
+                # we assume already sample frames from videos
                 for frame in video:
                     if not is_valid_image(frame) and not isinstance(frame, dict) and not os.path.exists(frame):
                         raise ValueError("Invalid image found in video frames.")
 
                 frames = video
-                fps_per_video.append(requested_fps)
-                durations.append(len(frames) / requested_fps if requested_fps > 0 else 0.0)
-
+                fps_per_video.append(kwargs.get("video_fps", 2.0))
+                durations.append(len(frames) / kwargs.get("video_fps", 2.0))
+                frames_indices.append(list(range(len(frames))))
             else:
-                probe_container = None
-                try:
-                    options = {
-                        "hwaccel": "cuda",
-                        "hwaccel_output_format": "cuda",
-                    }
-                    probe_container = av.open(video, "r", options=options)
-                except Exception as e:
-                    raise RuntimeError(
-                        f"CUDA hardware acceleration required but failed for video {video}. "
-                        f"Error: {e}\n"
-                        f"Ensure:\n"
-                        f"1. NVIDIA GPU is available (check: nvidia-smi)\n"
-                        f"2. FFmpeg compiled with CUDA support\n"
-                        f"3. CUDA runtime libraries are accessible"
-                    )
+                container = av.open(video, "r")
+                video_stream = next(stream for stream in container.streams if stream.type == "video")
+                sample_indices = self._get_video_sample_indices(video_stream, **kwargs) 
+                original_fps = float(video_stream.average_rate)
+                # for qwen3vl video timestamp calculation
+                frames_indices.append([idx / original_fps * kwargs.get("video_fps", 2.0) for idx in sample_indices]) # hack usage when do_sample_frames=False
+                container.seek(0)
+                for frame_idx, frame in enumerate(container.decode(video_stream)):
+                    if frame_idx in sample_indices:
+                        frames.append(frame.to_image())
 
-                try:
-                    video_stream = next(stream for stream in probe_container.streams if stream.type == "video")
-                    video_stream.codec_context.thread_count = 1
-                    sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
-                    raw_duration = self._get_stream_duration_seconds(probe_container, video_stream)
-                finally:
-                    if probe_container is not None:
-                        probe_container.close()
-
-                frames, duration = self._decode_video_frames(
-                    video=video,
-                    sample_indices=sample_indices,
-                    output="pil",
-                    **kwargs,
-                )
-
-                if raw_duration is None:
-                    raw_duration = duration
-
-                durations.append(raw_duration)
-                if raw_duration and raw_duration > 0:
-                    fps_per_video.append(len(sample_indices) / raw_duration)
+                if video_stream.duration is None:
+                    fps_per_video.append(kwargs.get("video_fps", 2.0))
+                    durations.append(len(frames) / kwargs.get("video_fps", 2.0))
                 else:
-                    fps_per_video.append(requested_fps)
+                    fps_per_video.append(len(sample_indices) / float(video_stream.duration * video_stream.time_base))
+                    durations.append(float(video_stream.duration * video_stream.time_base))
 
-            if len(frames) % 2 != 0 and len(frames) > 0:
+            if len(frames) % 2 != 0:
                 frames.append(frames[-1])
 
             frames = self._regularize_images(frames, **kwargs)["images"]
             results.append(frames)
 
-        return {"videos": results, "fps_per_video": fps_per_video, "durations": durations}
+        return {"videos": results, "fps_per_video": fps_per_video, "durations": durations, "frames_indices": frames_indices}
+
     @override
     def _get_mm_inputs(
         self,
@@ -1906,7 +1580,7 @@ class Qwen2VLPlugin(BasePlugin):
 
         merge_length: int = getattr(image_processor, "merge_size") ** 2
         if self.expand_mm_tokens:
-            mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+            mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
             image_grid_thw = mm_inputs.get("image_grid_thw", [])
             video_grid_thw = mm_inputs.get("video_grid_thw", [])
         else:
@@ -1968,8 +1642,8 @@ class Qwen3VLPlugin(Qwen2VLPlugin):
                 video_maxlen=getattr(processor, "video_maxlen", 128),
             )
             video_metadata = [
-                {"fps": getattr(processor, "video_fps", 24.0), "duration": duration, "total_num_frames": len(video)}
-                for video, duration in zip(videos["videos"], videos["durations"])
+                {"fps": getattr(processor, "video_fps", 24.0), "duration": duration, "total_num_frames": len(video), "frames_indices": sample_indices}
+                for video, duration, sample_indices in zip(videos["videos"], videos["durations"], videos["frames_indices"])
             ]
             mm_inputs.update(
                 video_processor(
@@ -1977,6 +1651,7 @@ class Qwen3VLPlugin(Qwen2VLPlugin):
                     video_metadata=video_metadata,
                     fps=getattr(processor, "video_fps", 2.0),
                     return_metadata=True,
+                    do_sample_frames=False, # avoid changing frames_indices
                 )
             )
             temporal_patch_size: int = getattr(image_processor, "temporal_patch_size", 2)
@@ -2004,7 +1679,7 @@ class Qwen3VLPlugin(Qwen2VLPlugin):
         image_merge_length: int = getattr(image_processor, "merge_size") ** 2
         video_merge_length: int = getattr(video_processor, "merge_size") ** 2
         if self.expand_mm_tokens:
-            mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+            mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
             image_grid_thw = mm_inputs.get("image_grid_thw", [])
             video_grid_thw = mm_inputs.get("video_grid_thw", [])
             num_frames = video_grid_thw[0][0] if len(video_grid_thw) > 0 else 0  # hard code for now
@@ -2116,7 +1791,7 @@ class GLM4VPlugin(Qwen2VLPlugin):
 
         merge_length: int = getattr(image_processor, "merge_size") ** 2
         if self.expand_mm_tokens:
-            mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+            mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
             image_grid_thw = mm_inputs.get("image_grid_thw", [])
             video_grid_thw = mm_inputs.get("video_grid_thw", [])
             num_frames = video_grid_thw[0][0] if len(video_grid_thw) > 0 else 0  # hard code for now
@@ -2187,7 +1862,7 @@ class GLM4VPlugin(Qwen2VLPlugin):
         processor: Optional["ProcessorMixin"],
     ) -> dict[str, Union[list[int], "torch.Tensor"]]:
         self._validate_input(processor, images, videos, audios)
-        mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+        mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
         mm_inputs.pop("timestamps", None)
         return mm_inputs
 
@@ -2269,7 +1944,7 @@ class Qwen2OmniPlugin(Qwen2VLPlugin):
         merge_length = processor.image_processor.merge_size**2
         use_audio_in_video = getattr(processor, "use_audio_in_video", False)
         if self.expand_mm_tokens:
-            mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+            mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
             image_grid_thw = mm_inputs.get("image_grid_thw", [])
             video_grid_thw = mm_inputs.get("video_grid_thw", [])
             if "feature_attention_mask" in mm_inputs:
@@ -2390,7 +2065,7 @@ class VideoLlavaPlugin(BasePlugin):
         messages = deepcopy(messages)
         num_frames = 0
         if self.expand_mm_tokens:
-            mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+            mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
             if "pixel_values_images" in mm_inputs:
                 height, width = get_image_size(to_numpy_array(mm_inputs["pixel_values_images"][0]))
                 num_frames = 1
@@ -2471,7 +2146,7 @@ class LFMVLPlugin(BasePlugin):
         downsample_factor: int = getattr(image_processor, "downsample_factor", 2)
 
         if self.expand_mm_tokens and len(images) > 0:
-            mm_inputs = self._get_mm_inputs_cached(images, videos, audios, processor)
+            mm_inputs = self._get_mm_inputs(images, videos, audios, processor)
             spatial_shapes = mm_inputs.get("spatial_shapes", [])
         else:
             spatial_shapes = []
