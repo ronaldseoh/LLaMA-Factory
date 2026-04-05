@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import multiprocessing as mp
+mp.set_start_method("spawn", force=True)
+import torch
+torch.multiprocessing.set_sharing_strategy('file_system')
 
 def main():
     from .extras.misc import is_env_enabled
