@@ -17,7 +17,6 @@ import shutil
 from typing import TYPE_CHECKING, Any, Optional
 
 import torch
-torch.multiprocessing.set_sharing_strategy('file_system')
 import torch.distributed as dist
 from transformers import EarlyStoppingCallback, PreTrainedModel
 
