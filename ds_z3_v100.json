@@ -38,6 +38,5 @@
   "train_batch_size": "auto",
   "train_micro_batch_size_per_gpu": 1,
   "zero_quantized_nontrainable_weights": true,
-  "allgather_sequential": true,
   "wall_clock_breakdown": false
 }
