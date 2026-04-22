@@ -18,10 +18,11 @@
     "reduce_bucket_size": 2e7,
     "stage3_prefetch_bucket_size": 2e7,
     "allgather_bucket_size": 1e7,
-    "stage3_param_persistence_threshold": 1e4,
+    "stage3_param_persistence_threshold": 0,
+    "stage3_model_persistence_threshold": 0,
     "stage3_max_live_parameters": 1e7,
     "stage3_max_reuse_distance": 1e7,
-    "stage3_gather_16bit_weights_on_model_save": true,
+    "stage3_gather_16bit_weights_on_model_save": false,
     "offload_optimizer": {
       "device": "cpu",
       "pin_memory": true
@@ -35,6 +36,8 @@
   "gradient_clipping": "auto",
   "steps_per_print": 2000,
   "train_batch_size": "auto",
-  "train_micro_batch_size_per_gpu": "auto",
+  "train_micro_batch_size_per_gpu": 1,
+  "zero_quantized_nontrainable_weights": true,
+  "allgather_sequential": true,
   "wall_clock_breakdown": false
 }
