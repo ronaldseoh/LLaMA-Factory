@@ -279,7 +279,7 @@ class MMPluginMixin:
                 frames = video
                 durations.append(len(frames) / kwargs.get("video_fps", 2.0))
             else:
-                container = av.open(video, "r")
+                container = av.open(video, metadata_errors="ignore")
                 video_stream = next(stream for stream in container.streams if stream.type == "video")
                 sample_indices = self._get_video_sample_indices(video_stream, **kwargs)
                 container.seek(0)
@@ -1503,7 +1503,7 @@ class Qwen2VLPlugin(BasePlugin):
                 durations.append(len(frames) / kwargs.get("video_fps", 2.0))
                 frames_indices.append(list(range(len(frames))))
             else:
-                container = av.open(video, "r")
+                container = av.open(video, metadata_errors="ignore")
                 video_stream = next(stream for stream in container.streams if stream.type == "video")
                 sample_indices = self._get_video_sample_indices(video_stream, **kwargs) 
                 original_fps = float(video_stream.average_rate)
