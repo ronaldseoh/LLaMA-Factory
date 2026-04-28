@@ -99,5 +99,11 @@ def apply_liger_kernel(
     else:
         kwargs = {}
 
+    if model_type == "qwen3_vl":
+        kwargs["rope"] = False
+        kwargs["fused_linear_cross_entropy"] = True
+        kwargs["rms_norm"] = True
+        kwargs["swiglu"] = False
+
     apply_liger_kernel(**kwargs)
     logger.info_rank0("Liger kernel has been applied to the model.")
