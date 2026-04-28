@@ -75,6 +75,8 @@ def apply_liger_kernel(
         from liger_kernel.transformers import apply_liger_kernel_to_qwen2_5_vl as apply_liger_kernel
     elif model_type == "qwen3":
         from liger_kernel.transformers import apply_liger_kernel_to_qwen3 as apply_liger_kernel
+    elif model_type == "qwen3_vl":
+        from liger_kernel.transformers import apply_liger_kernel_to_qwen3_vl as apply_liger_kernel
     elif model_type == "qwen3_moe":
         from liger_kernel.transformers import apply_liger_kernel_to_qwen3_moe as apply_liger_kernel
     elif model_type == "qwen3_next":
