@@ -44,11 +44,12 @@ def run_sft(
     callbacks: Optional[list["TrainerCallback"]] = None,
 ):
     if not is_hyper_parallel_available():
-        raise ImportError(
-            "hyper_parallel is not installed. Please install it with `pip install hyper_parallel`."
-        )
+        raise ImportError("hyper_parallel is not installed. Please install it with `pip install hyper_parallel`.")
 
-    from hyper_parallel.integration.llamafactory import HyperParallelArguments, HyperParallelTrainer  # pylint: disable=C0415
+    from hyper_parallel.integration.llamafactory import (  # pylint: disable=C0415
+        HyperParallelArguments,
+        HyperParallelTrainer,
+    )
 
     tokenizer_module = load_tokenizer(model_args)
     tokenizer = tokenizer_module["tokenizer"]
@@ -128,8 +129,9 @@ def run_sft(
     )
 
     if finetuning_args.use_badam:
-        from badam import BAdamCallback, clip_grad_norm_old_version  # type: ignore[import]
         from types import MethodType
+
+        from badam import BAdamCallback, clip_grad_norm_old_version  # type: ignore[import]
 
         trainer.accelerator.clip_grad_norm_ = MethodType(clip_grad_norm_old_version, trainer.accelerator)
         trainer.add_callback(BAdamCallback)
