@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Literal, Optional, Union
 
 import numpy as np
 from datasets import Dataset, DatasetDict, load_dataset, load_from_disk
-from datasets._fingerprint import Hasher
+from datasets.fingerprint import Hasher
 
 from ..extras import logging
 from ..extras.constants import FILEEXT2TYPE
