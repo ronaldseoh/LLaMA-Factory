@@ -82,6 +82,9 @@ def configure_attn_implementation(config: "PretrainedConfig", model_args: "Model
             return
 
         requested_attn_implementation = "flash_attention_2"
+
+    elif model_args.flash_attn == AttentionFunction.FLEX:
+        requested_attn_implementation = "flex_attention"
     else:
         raise NotImplementedError(f"Unknown attention type: {model_args.flash_attn}")
 
@@ -111,5 +114,7 @@ def print_attn_implementation(config: "PretrainedConfig") -> None:
         logger.info_rank0("Using FlashAttention-2 for faster training and inference.")
     elif attn_implementation == "sdpa":
         logger.info_rank0("Using torch SDPA for faster training and inference.")
+    elif attn_implementation == "flex_attention":
+        logger.info_rank0("Using torch FlexAttention for faster training and inference.")
     else:
         logger.info_rank0("Using vanilla attention implementation.")
