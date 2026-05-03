@@ -248,7 +248,7 @@ def _get_preprocessed_dataset(
     kwargs = {}
     if not data_args.streaming:
         hasher = Hasher()
-        hasher.update(dataset.fingerprint)
+        hasher.update(dataset._fingerprint)
         hasher.update(stage)
         hasher.update(is_eval)
         hasher.update(data_args)
