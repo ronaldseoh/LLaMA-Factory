@@ -17,7 +17,7 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Union
 
-from datasets.fingerprint import Hasher
+from datasets._fingerprint import Hasher
 
 from ..extras import logging
 from .data_utils import Role
