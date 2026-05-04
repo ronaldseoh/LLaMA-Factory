@@ -121,8 +121,6 @@ def print_attn_implementation(config: "PretrainedConfig") -> None:
 
     if attn_implementation == "flash_attention_2":
         logger.info_rank0("Using FlashAttention-2 for faster training and inference.")
-    elif attn_implementation == "flash_attention_4":
-        logger.info_rank0("Using FlashAttention-4 for faster training and inference.")
     elif attn_implementation == "sdpa":
         logger.info_rank0("Using torch SDPA for faster training and inference.")
     elif attn_implementation == "flex_attention":
