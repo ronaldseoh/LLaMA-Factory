@@ -29,7 +29,7 @@ logger = logging.get_logger(__name__)
 
 
 def configure_attn_implementation(config: "PretrainedConfig", model_args: "ModelArguments") -> None:
-    from transformers.utils import is_flash_attn_2_available, is_flash_attn_4_available
+    from transformers.utils import is_flash_attn_2_available
 
     if getattr(config, "model_type", None) == "gpt_oss":
         from transformers.integrations.hub_kernels import load_and_register_kernel
@@ -82,15 +82,6 @@ def configure_attn_implementation(config: "PretrainedConfig", model_args: "Model
             return
 
         requested_attn_implementation = "flash_attention_2"
-
-    elif model_args.flash_attn == AttentionFunction.FA4:
-        from transformers import is_torch_npu_available
-
-        if not is_flash_attn_4_available():
-            logger.warning_rank0("FlashAttention-4 is not installed.")
-            return
-
-        requested_attn_implementation = "flash_attention_4"
 
     elif model_args.flash_attn == AttentionFunction.FLEX:
         requested_attn_implementation = "flex_attention"
