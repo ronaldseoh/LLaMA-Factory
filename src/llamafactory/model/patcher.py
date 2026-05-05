@@ -263,34 +263,6 @@ def patch_youtu_vl_model(model: "PreTrainedModel") -> None:
     model.forward = MethodType(forward, model)
 
 
-def disable_te_fp8_for_qwen3vl_vision(model):
-    try:
-        import transformer_engine.pytorch as te
-    except ImportError:
-        return model  # TE not installed, nothing to do
-
-    # Qwen3-VL exposes vision tower as `model.visual`
-    visual = getattr(model, "visual", None)
-
-    # Some wrappers nest the actual model
-    if visual is None and hasattr(model, "model"):
-        visual = getattr(model.model, "visual", None)
-
-    if visual is None:
-        return model  # not a Qwen3-VL model
-
-    orig_forward = visual.forward
-
-    def forward_no_fp8(*args, **kwargs):
-        with te.fp8_autocast(enabled=False):
-            return orig_forward(*args, **kwargs)
-
-    visual.forward = forward_no_fp8
-
-    print("[LLaMA-Factory] Disabled Transformer Engine FP8 for Qwen3-VL vision tower")
-    return model
-
-
 def patch_tokenizer(tokenizer: "PreTrainedTokenizer", model_args: "ModelArguments") -> None:
     if "PreTrainedTokenizerBase" not in str(tokenizer._pad.__func__):
         tokenizer._pad = MethodType(PreTrainedTokenizerBase._pad, tokenizer)
@@ -438,9 +410,6 @@ def patch_model(
 
         if getattr(model.config, "model_type", None) == "youtu_vl":
             patch_youtu_vl_model(model)
-
-        if getattr(model.config, "model_type", None) == "qwen3_vl":
-            model = disable_te_fp8_for_qwen3vl_vision(model)
 
         prepare_model_for_training(model, model_args)
         autocast_projector_dtype(model, model_args)
