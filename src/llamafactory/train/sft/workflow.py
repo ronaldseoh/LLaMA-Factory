@@ -63,6 +63,7 @@ def run_sft(
         template=template,
         model=model if not training_args.predict_with_generate else None,
         padding="max_length",
+        max_length=9728,
         pad_to_multiple_of=8 if training_args.do_train else None,  # for shift short attention
         label_pad_token_id=IGNORE_INDEX if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id,
         block_diag_attn=model_args.block_diag_attn,
