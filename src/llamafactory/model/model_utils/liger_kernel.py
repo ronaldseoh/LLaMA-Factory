@@ -37,6 +37,9 @@ def apply_liger_kernel(
         return
 
     model_type = getattr(config, "model_type", None)
+    
+    print(model_type)
+    
     if model_type == "gemma":
         from liger_kernel.transformers import apply_liger_kernel_to_gemma as apply_liger_kernel
     elif model_type == "gemma2":
